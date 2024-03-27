@@ -10,12 +10,14 @@ from torch.nn import ModuleList
 from torch.nn.init import xavier_uniform_
 from torch.nn import Dropout
 
+# HiFT中的调制层，x即为M3E，y为M’4，返回的是M4E
+# TCTrack中有类似的结构
 class Cattention(nn.Module):
 
     def __init__(self, in_dim):
         super(Cattention, self).__init__()
         self.chanel_in = in_dim
-        self.conv1=nn.Sequential(
+        self.conv1=nn.Sequential(  # 卷积转置层，上采样，输入为in_dim*2，输出为in_dim
                 nn.ConvTranspose2d(in_dim*2, in_dim,  kernel_size=1, stride=1),
                 )
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
@@ -28,13 +30,10 @@ class Cattention(nn.Module):
         ww=self.linear2(self.dropout(self.activation(self.linear1(self.avg_pool(y)))))
         weight=self.conv1(torch.cat((x,y),1))*ww
         
-        
         return x+self.gamma*weight*x
 
 
-
 class Transformer(Module):
-
 
     def __init__(self, d_model: int = 512, nhead: int = 8, num_encoder_layers: int = 6,
                  num_decoder_layers: int = 6, dim_feedforward: int = 2048, dropout: float = 0.1,
@@ -135,7 +134,6 @@ class TransformerEncoder(Module):
 
         return output
 
-
 class TransformerDecoder(Module):
     r"""TransformerDecoder is a stack of N decoder layers
 
@@ -188,6 +186,8 @@ class TransformerDecoder(Module):
 
         return output
 
+
+# new
 class TransformerEncoderLayer(Module):
     r"""TransformerEncoderLayer is made up of self-attn and feedforward network.
     This standard encoder layer is based on the paper "Attention Is All You Need".
@@ -209,14 +209,21 @@ class TransformerEncoderLayer(Module):
         >>> out = encoder_layer(src)
     """
 
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu"):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu"): 
         super(TransformerEncoderLayer, self).__init__()
-        self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout)
+        
+        # self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout)  # HiFT encoder中只有一个多头注意力
+        
+        # new
+        elf.self_attn1 = MultiheadAttention(d_model, nhead, dropout=dropout)
+        elf.self_attn2 = MultiheadAttention(d_model, nhead, dropout=dropout)
+
         channel=192
-        self.cross_attn=Cattention(channel)
+        self.cross_attn=Cattention(channel)  # 调制层
 
         # Implementation of Feedforward model
-    
+
+        # 这个好像没用上
         self.eles=nn.Sequential(
                 nn.Conv2d(channel, channel,  kernel_size=3, stride=1,padding=1),
                 nn.GroupNorm(32,channel),
@@ -231,6 +238,7 @@ class TransformerEncoderLayer(Module):
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout1 = Dropout(dropout)
         self.dropout2 = Dropout(dropout)
+        self.dropout3 = Dropout(dropout)  # new
 
         self.activation = _get_activation_fn(activation)
 
@@ -242,20 +250,36 @@ class TransformerEncoderLayer(Module):
     def forward(self, src: Tensor,srcc: Tensor, src_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None) -> Tensor:
         
         b,c,s=src.permute(1,2,0).size()
-        src2 = self.self_attn(self.norm0(src+srcc), self.norm0(src+srcc), src, attn_mask=src_mask,
-                               key_padding_mask=src_key_padding_mask)[0]
-        src = src + self.dropout1(src2)
-        src = self.norm1(src)
+
+        # old
+        # src2 = self.self_attn(self.norm0(src+srcc), self.norm0(src+srcc), src, attn_mask=src_mask,
+        #                        key_padding_mask=src_key_padding_mask)[0]
+        # src = src + self.dropout1(src2)
+        # src = self.norm1(src)
+
+        # new 第一个多头注意力
+        src1 = self.self_attn1(srcc, src, src, attn_mask=src_mask,
+                                key_padding_mask=src_key_padding_mask)[0]
+        src = src + self.dropout1(src1)
+        src = self.norm0(src)
         
+        # new 第二个多头注意力
+        src2 = self.self_attn1(src, src, src, attn_mask=src_mask,
+                                key_padding_mask=src_key_padding_mask)[0]
+        src = src + self.dropout2(src2)
+        src = self.norm1(src)
+
+        # 调制层
         src=self.cross_attn(src.view(b,c,int(s**0.5),int(s**0.5))\
                              ,srcc.contiguous().view(b,c,int(s**0.5),int(s**0.5))).view(b,c,-1).permute(2, 0, 1)
-
+        
+        # feedforward
         src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
-        src = src + self.dropout2(src2)
+        src = src + self.dropout3(src2)
         src = self.norm2(src)
         return src
 
-
+# new
 class TransformerDecoderLayer(Module):
     r"""TransformerDecoderLayer is made up of self-attn, multi-head-attn and feedforward network.
     This standard decoder layer is based on the paper "Attention Is All You Need".
@@ -280,7 +304,8 @@ class TransformerDecoderLayer(Module):
 
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu"):
         super(TransformerDecoderLayer, self).__init__()
-        self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout)
+
+        # self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout)
         self.multihead_attn = MultiheadAttention(d_model, nhead, dropout=dropout)
         # Implementation of Feedforward model
         self.linear1 = nn.Linear(d_model, dim_feedforward)
@@ -289,10 +314,10 @@ class TransformerDecoderLayer(Module):
 
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
-        self.norm3 = nn.LayerNorm(d_model)
+        # self.norm3 = nn.LayerNorm(d_model)
         self.dropout1 = Dropout(dropout)
         self.dropout2 = Dropout(dropout)
-        self.dropout3 = Dropout(dropout)
+        # self.dropout3 = Dropout(dropout)
 
         self.activation = _get_activation_fn(activation)
 
@@ -316,17 +341,18 @@ class TransformerDecoderLayer(Module):
         Shape:
             see the docs in Transformer class.
         """
-        tgt2 = self.self_attn(tgt, tgt, tgt, attn_mask=tgt_mask,
-                              key_padding_mask=tgt_key_padding_mask)[0]
-        tgt = tgt + self.dropout1(tgt2)
-        tgt = self.norm1(tgt)
+        # tgt2 = self.self_attn(tgt, tgt, tgt, attn_mask=tgt_mask,
+        #                      key_padding_mask=tgt_key_padding_mask)[0]
+        # tgt = tgt + self.dropout1(tgt2)
+        # tgt = self.norm1(tgt)
+        # new
         tgt2 = self.multihead_attn(tgt, memory, memory, attn_mask=memory_mask,
                                    key_padding_mask=memory_key_padding_mask)[0]
+        tgt = tgt + self.dropout1(tgt2)
+        tgt = self.norm1(tgt)
+        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
         tgt = tgt + self.dropout2(tgt2)
         tgt = self.norm2(tgt)
-        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
-        tgt = tgt + self.dropout3(tgt2)
-        tgt = self.norm3(tgt)
         return tgt
 
 

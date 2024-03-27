@@ -5,7 +5,7 @@
       <excludeFolder url="file://$MODULE_DIR$/train_dataset" />
       <excludeFolder url="file://$MODULE_DIR$/test_dataset" />
     </content>
-    <orderEntry type="inheritedJdk" />
+    <orderEntry type="jdk" jdkName="hift" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
   <component name="PyDocumentationSettings">

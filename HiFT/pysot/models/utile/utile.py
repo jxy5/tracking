@@ -9,8 +9,7 @@ class HiFT(nn.Module):
     
     def __init__(self,cfg):
         super(HiFT, self).__init__()
-
-
+        # 看了以下Alexnet的结构，384是第三四层的输出维度，256是第五层的输出维度
         self.conv1 = nn.Sequential(
             nn.Conv2d(384, 192, kernel_size=3, bias=False,stride=2,padding=1),
             nn.BatchNorm2d(192),
@@ -58,12 +57,14 @@ class HiFT(nn.Module):
 
         self.row_embed = nn.Embedding(50, channel//2)
         self.col_embed = nn.Embedding(50, channel//2)
-        self.reset_parameters()
+        self.reset_parameters()  # 初始化嵌入层的权重
         
         self.transformer = Transformer(channel, 6, 1, 2)
         
         self.cls1=nn.Conv2d(channel, 2,  kernel_size=3, stride=1,padding=1)
         self.cls2=nn.Conv2d(channel, 1,  kernel_size=3, stride=1,padding=1)
+
+        # 对conv1中的所有卷积层进行初始化
         for modules in [self.conv1]:
             for l in modules.modules():
                 if isinstance(l, nn.Conv2d):
@@ -86,23 +87,23 @@ class HiFT(nn.Module):
     
     def forward(self,x,z):
 
-        res1=self.conv1(self.xcorr_depthwise(x[0],z[0]))
+        # 后三层分别进行深度互相关运算。这里的顺序很奇怪是反着的
+        res1=self.conv1(self.xcorr_depthwise(x[0],z[0])) # x[0]可能是搜索区域的第三层
         res2=self.conv3(self.xcorr_depthwise(x[1],z[1]))
         
         res3=self.conv2(self.xcorr_depthwise(x[2],z[2]))
         
-        
+        # 位置编码。根据res3生成，也就是conv2
         h, w = res3.shape[-2:]
         i = t.arange(w).cuda()
         j = t.arange(h).cuda()
         x_emb = self.col_embed(i)
         y_emb = self.row_embed(j)
         pos = t.cat([
+            # 将位置编码扩展到与res3相同的尺寸
             x_emb.unsqueeze(0).repeat(h, 1, 1),
             y_emb.unsqueeze(1).repeat(1, w, 1),
         ], dim=-1).permute(2, 0, 1).unsqueeze(0).repeat(res3.shape[0], 1, 1, 1)
-        
-
         
         b,c,w,h=res3.size()
         res=self.transformer((pos+res1).view(b,c,-1).permute(2, 0, 1),\
@@ -118,8 +119,3 @@ class HiFT(nn.Module):
         cls2=self.cls2(acls)
 
         return loc,cls1,cls2
-
-
-
-
-
